@@ -111,6 +111,7 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
     $createEntities = _accountsync_get_contact_create_entities($connector_id);
     $updateEntities = _accountsync_get_contact_update_entities($connector_id);
     $invoiceEntities = _accountsync_get_invoice_create_entities($connector_id);
+    $invoiceDayZero = _accountsync_get_invoice_day_zero($connector_id);
     if ($objectName == 'LineItem') {
       // If only some financial types apply to this connector and the line
       // item does not have one of them then skip to the next connector.
@@ -129,6 +130,12 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
           case 'LineItem':
             // See https://issues.civicrm.org/jira/browse/CRM-16268.
             $contribution_id = (is_array($objectRef)) ? $objectRef['contribution_id'] : $objectRef->contribution_id;
+            if (!$contribution_id) {
+              // We are updating a line item in what is probably a trivial way - e.g updating a price set field label
+              // skip out early
+              // @todo refine when we return early in case of odd cases where we DO want to know.
+              return;
+            }
             $contactID = civicrm_api3('Contribution', 'getvalue', array(
                 'id' => $contribution_id,
                 'return' => 'contact_id',
@@ -154,11 +161,45 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
 
     if (in_array($objectName, $invoiceEntities)) {
       $contribution_id = ($objectName == 'LineItem') ? (is_array($objectRef) ? $objectRef['contribution_id'] : $objectRef->contribution_id) : $objectRef->id;
+      if (isBeforeDayZero($objectName, $objectRef, $contribution_id, $invoiceDayZero)) {
+        return;
+      }
       // we won't do updates as the invoices get 'locked' in the accounts system
       _accountsync_create_account_invoice($contribution_id, TRUE, $connector_id);
     }
   }
 
+}
+
+/**
+ * Is the invoice before the day zero.
+ *
+ * We only sync contributions afer the day zero date.
+ *
+ * @param string $objectName
+ * @param CRM_Contribute_BAO_Contribution| CRM_Financial_BAO_LineItem $objectRef
+ * @param int $contribution_id
+ * @param string $invoiceDayZero
+ *
+ * @throws \CiviCRM_API3_Exception
+ *
+ * @return bool
+ */
+function isBeforeDayZero($objectName, $objectRef, $contribution_id, $invoiceDayZero) {
+  if (empty($invoiceDayZero)) {
+    return FALSE;
+  }
+  $receive_date = ($objectName == 'Contribution') ? $objectRef->receive_date : NULL;
+  if (!$receive_date) {
+    $receive_date = civicrm_api3('Contribution', 'getvalue', array(
+      'id' => $contribution_id,
+      'return' => 'receive_date',
+    ));
+  }
+  if (strtotime($receive_date) < strtotime($invoiceDayZero)) {
+    return TRUE;
+  }
+  return FALSE;
 }
 
 /**
@@ -284,6 +325,23 @@ function _accountsync_get_invoice_create_entities($connector_id) {
 }
 
 /**
+ * Get the entities whose change should trigger an invoice creation in the accounts package.
+ *
+ * @param int $connector_id
+ *   Connector ID if nz.co.fuzion.connectors is installed, else 0.
+ *
+ * @return array
+ *   Entities that result in an invoice being created when the are edited or created.
+ *
+ * @throws \CiviCRM_API3_Exception
+ */
+function _accountsync_get_invoice_day_zero($connector_id) {
+  $entities = _accountsync_get_entity_action_settings($connector_id);
+  $createEntities = CRM_Utils_Array::value('account_sync_contribution_day_zero', $entities, array());
+  return $createEntities;
+}
+
+/**
  * Get the account contact id for the connector, if relevant.
  *
  * @param int $connector_id
@@ -314,6 +372,17 @@ function _accountsync_get_entity_action_settings($connector_id) {
   static $entities = array();
   if (empty($entities[$connector_id])) {
     $result = civicrm_api3('setting', 'get', array('group' => 'Account Sync'));
+    // There appears to be a bug in CiviCRM core whereby sometimes extension
+    // setting metadata isn't cached. If we think that is the case we'll flush the caches
+    // to fix it. This happens rarely & represents a serious functionality breakage
+    // so performance trade off is OK
+    if (!isset($result['values'][CRM_Core_Config::domainID()]['account_sync_queue_contacts'])
+     && !isset($result['values'][CRM_Core_Config::domainID()]['account_sync_queue_contacts'])
+    ) {
+      civicrm_api3('system', 'flush', array());
+      $result = civicrm_api3('setting', 'get', array('group' => 'Account Sync'));
+    }
+
     $entities[$connector_id] = $result['values'][CRM_Core_Config::domainID()];
     if (!empty($connector_id)) {
       try {
@@ -407,12 +476,12 @@ function _accountsync_handle_contact_deletion($op, $entity, $id, &$params) {
 function _accountsync_handle_contribution_deletion($op, $objectName, $id, &$params) {
   if (($op == 'delete') && ($objectName == 'Contribution')) {
     try {
-      $accountInvoice = civicrm_api3('account_invoice', 'getsingle', array(
+      $accountInvoice = civicrm_api3('AccountInvoice', 'getsingle', array(
         'contribution_id' => $id,
         'plugin' => 'xero')
       );
       if (empty($accountInvoice['accounts_invoice_id'])) {
-        civicrm_api3('account_invoice', 'delete', array('id' => $accountInvoice['id']));
+        civicrm_api3('AccountInvoice', 'delete', array('id' => $accountInvoice['id']));
       }
       else {
         //here we need to create a way to void
@@ -494,6 +563,20 @@ function _accountsync_create_account_contact($contactID, $createNew, $connector_
 }
 
 /**
+ * Implements hook_civicrm_angularModules().
+ *
+ * Generate a list of Angular modules.
+ *
+ * Note: This hook only runs in CiviCRM 4.5+. It may
+ * use features only available in v4.6+.
+ *
+ * @link http://wiki.civicrm.org/confluence/display/CRMDOC/hook_civicrm_caseTypes
+ */
+function accountsync_civicrm_angularModules(&$angularModules) {
+  _accountsync_civix_civicrm_angularModules($angularModules);
+}
+
+/**
  * Create account invoice record or set needs_update flag.
  *
  * @param int $contributionID
@@ -508,7 +591,7 @@ function _accountsync_create_account_invoice($contributionID, $createNew, $conne
     $accountInvoice['connector_id'] = $connector_id;
   }
   try {
-    $accountInvoice['id'] = civicrm_api3('account_invoice', 'getvalue', array(
+    $accountInvoice['id'] = civicrm_api3('AccountInvoice', 'getvalue', array(
       'plugin' => 'xero',
       'return' => 'id',
       'contribution_id' => $contributionID,
@@ -523,7 +606,7 @@ function _accountsync_create_account_invoice($contributionID, $createNew, $conne
   }
   $accountInvoice['plugin'] = 'xero';
   try {
-    civicrm_api3('account_invoice', 'create', $accountInvoice);
+    civicrm_api3('AccountInvoice', 'create', $accountInvoice);
   }
   catch (CiviCRM_API3_Exception $e) {
     // Unknown failure.
@@ -555,4 +638,23 @@ function accountsync_civicrm_merge($type, $data, $new_id = NULL, $old_id = NULL,
       //nothing to do here
     }
   }
+}
+
+/**
+ * Implements hook_civicrm_entityTypes.
+ *
+ * @param array $entityTypes
+ *   Registered entity types.
+ */
+function accountsync_civicrm_entityTypes(&$entityTypes) {
+  $entityTypes['CRM_Accountsync_DAO_AccountContact'] = array(
+    'name' => 'AccountContact',
+    'class' => 'CRM_Accountsync_DAO_AccountContact',
+    'table' => 'civicrm_account_contact',
+  );
+  $entityTypes['CRM_Accountsync_DAO_AccountInvoice'] = array(
+    'name' => 'AccountInvoice',
+    'class' => 'CRM_Accountsync_DAO_AccountInvoice',
+    'table' => 'civicrm_account_invoice',
+  );
 }
