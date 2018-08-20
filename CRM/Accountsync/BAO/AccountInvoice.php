@@ -210,11 +210,27 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
    * @todo - I don't believe this will adequately cancel related entities
    */
   public static function cancelContributionFromAccountsStatus($params) {
+    if (!empty($params['contribution_status_id'])) {
+      if (substr($params['contribution_status_id'], 0, 1) == "!") {
+        $operator = 'NOT IN';
+        $currentStatus = substr($params['contribution_status_id'], 1);
+      }
+      else {
+        $operator = 'IN';
+        $currentStatus = $params['contribution_status_id'];
+      }
+    }
+    else {
+      $operator = 'NOT IN';
+      $currentStatus = '3';
+    }
+
     //get pending registrations
     $sql = "SELECT  cas.contribution_id
       FROM civicrm_account_invoice cas
-      LEFT JOIN civicrm_contribution  civi ON cas.contribution_id = civi.id
+      JOIN civicrm_contribution  civi ON cas.contribution_id = civi.id
       WHERE accounts_status_id =3
+      AND civi.contribution_status_id {$operator} ({$currentStatus})
     ";
     $dao = CRM_Core_DAO::executeQuery($sql);
 
