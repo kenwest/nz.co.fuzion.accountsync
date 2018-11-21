@@ -98,8 +98,7 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
       $contribution['payment_instrument_id'] = array_search($contribution['payment_instrument'], $paymentInstruments['values']);
     }
 
-    $instrumentFinancialAccounts = CRM_Financial_BAO_FinancialTypeAccount::getInstrumentFinancialAccount();
-    $contribution['payment_instrument_financial_account_id'] = $instrumentFinancialAccounts[$contribution['payment_instrument_id']];
+    $contribution['payment_instrument_financial_account_id'] = CRM_Financial_BAO_FinancialTypeAccount::getInstrumentFinancialAccount($contribution['payment_instrument_id']);
     try {
       $contribution['payment_instrument_accounting_code'] = civicrm_api3('financial_account', 'getvalue', array(
         'id' => $contribution['payment_instrument_financial_account_id'],
@@ -158,15 +157,37 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
    */
   public static function completeContributionFromAccountsStatus() {
     $sql = "
-      SELECT contribution_id
+      SELECT contribution_id, receive_date
       FROM civicrm_account_invoice cas
       LEFT JOIN civicrm_contribution  civi ON cas.contribution_id = civi.id
       WHERE civi.contribution_status_id =2
       AND accounts_status_id = 1
       ";
     $dao = CRM_Core_DAO::executeQuery($sql);
+
+    // Get send receipt override
+    $isSendReceipt = civicrm_api3('Setting', 'getvalue', array(
+        'domain_id' => CRM_Core_Config::domainID(),
+        'name' => 'account_sync_send_receipt',
+      ));
+    switch ($isSendReceipt) {
+      case 'send':
+        $send_receipt = 1;
+        break;
+      case 'do_not_send':
+        $send_receipt = 0;
+        break;
+      default:
+        $send_receipt = NULL;
+        break;
+    }
+
     while ($dao->fetch()) {
-      civicrm_api3('contribution', 'completetransaction', array('id' => $dao->contribution_id));
+      $params = array('id' => $dao->contribution_id, 'receive_date' => $dao->receive_date);
+      if (is_numeric($isSendReceipt)) {
+        $params['is_email_receipt'] = $send_receipt;
+      }
+      civicrm_api3('contribution', 'completetransaction', $params);
     }
   }
 
@@ -176,12 +197,27 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
    * @todo - I don't believe this will adequately cancel related entities
    */
   public static function cancelContributionFromAccountsStatus($params) {
+    if (!empty($params['contribution_status_id'])) {
+      if (substr($params['contribution_status_id'], 0, 1) == "!") {
+        $operator = 'NOT IN';
+        $currentStatus = substr($params['contribution_status_id'], 1);
+      }
+      else {
+        $operator = 'IN';
+        $currentStatus = $params['contribution_status_id'];
+      }
+    }
+    else {
+      $operator = 'NOT IN';
+      $currentStatus = '3';
+    }
+
     //get pending registrations
     $sql = "SELECT  cas.contribution_id
       FROM civicrm_account_invoice cas
-      LEFT JOIN civicrm_contribution  civi ON cas.contribution_id = civi.id
-      WHERE civi.contribution_status_id =2
-      AND accounts_status_id =3
+      JOIN civicrm_contribution  civi ON cas.contribution_id = civi.id
+      WHERE accounts_status_id =3
+      AND civi.contribution_status_id {$operator} ({$currentStatus})
     ";
     $dao = CRM_Core_DAO::executeQuery($sql);
 
@@ -219,11 +255,15 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
    * @param int $financialTypeID *
    *
    * @return string
+   * @throws \CRM_Core_Exception
    */
   public static function getAccountCode($financialTypeID) {
     static $codes = array();
     if (!in_array($financialTypeID, $codes)) {
       $codes[$financialTypeID] = CRM_Financial_BAO_FinancialAccount::getAccountingCode($financialTypeID);
+    }
+    if ($codes[$financialTypeID] === NULL) {
+      throw new CRM_Core_Exception("No Income Account code configured for financial type $financialTypeID");
     }
     return $codes[$financialTypeID];
   }

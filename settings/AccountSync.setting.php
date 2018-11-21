@@ -1,5 +1,10 @@
 <?php
 
+$status = civicrm_api3('Contribution', 'getoptions', array(
+  'field' => 'contribution_status_id',
+));
+$defaultContributionStatus = array_keys(array_intersect($status['values'], array('Completed', 'Pending')));
+
 return array(
   'account_sync_queue_contacts' => array(
     'group_name' => 'Account Sync',
@@ -13,13 +18,15 @@ return array(
     'title' =>  'Entities to trigger contact Create in the Remote System',
     'help_text' => 'When these entities are created the contact will be queued for sync',
     'default' => array('Contribution'),
-    'html_type' => 'advmultiselect',
-    'quick_form_type' => 'Element',
+    'quick_form_type' => 'Select',
+    'html_type' => 'Select',
     'html_attributes' => array(
-      'Contact' => 'Contact',
-      'Contribution' => 'Contribution',
-      'ContributionRecur' => 'Recurring Contribution',
-    )
+      'class' => 'crm-select2',
+      'multiple' => TRUE,
+    ),
+    'pseudoconstant' => array(
+      'callback' => 'CRM_Accountsync_BAO_Config::getSupportedContributionEntities',
+    ),
   ),
   'account_sync_queue_update_contacts' => array(
     'group_name' => 'Account Sync',
@@ -32,17 +39,16 @@ return array(
     'description' => 'Trigger contact update when entity edited or created',
     'title' =>  'Entities to trigger contact update',
     'help_text' => 'When these entities are created the contact will be queued for update',
-    'html_type' => 'advmultiselect',
     'default' => array('Contact', 'Email', 'Address', 'Phone'),
-    'quick_form_type' => 'Element',
+    'quick_form_type' => 'Select',
+    'html_type' => 'Select',
     'html_attributes' => array(
-      'Contact' => 'Contact',
-      'Contribution' => 'Contribution',
-      'ContributionRecur' => 'Recurring Contribution',
-      'Address' => 'Address',
-      'Email' => 'Email',
-      'Phone' => 'Phone',
-    )
+      'class' => 'crm-select2',
+      'multiple' => TRUE,
+    ),
+    'pseudoconstant' => array(
+      'callback' => 'CRM_Accountsync_BAO_Config::getSupportedContactUpdateEntities',
+    ),
   ),
   'account_sync_queue_create_invoice' => array(
     'group_name' => 'Account Sync',
@@ -55,12 +61,38 @@ return array(
     'description' => 'Trigger Invoice Creation when entity created',
     'title' =>  'Entities to trigger invoice create',
     'help_text' => 'When these entities are created an invoice will be queued for create',
-    'html_type' => 'advmultiselect',
+    'html_type' => 'Select',
     'default' => array('Contribution'),
-    'quick_form_type' => 'Element',
+    'quick_form_type' => 'Select',
     'html_attributes' => array(
-      'Contribution' => 'Contribution',
-    )
+      'class' => 'crm-select2',
+      'multiple' => TRUE,
+    ),
+    'pseudoconstant' => array(
+      'callback' => 'CRM_Accountsync_BAO_Config::getSupportedContributionCreateEntities',
+    ),
+  ),
+  'account_sync_skip_inv_by_pymt_processor' => array(
+    'group_name' => 'Account Sync',
+    'group' => 'accountsync',
+    'name' => 'account_sync_skip_inv_by_pymt_processor',
+    'type' => 'Array',
+    'add' => '4.4',
+    'is_domain' => 1,
+    'is_contact' => 0,
+    'description' => 'Skip trigger of Invoice Creation when entities use this payment processor',
+    'title' =>  'Payment processors to trigger skip of invoice create',
+    'help_text' => 'When entities that use these payment processors are created an invoice will not be queued for create',
+    'html_type' => 'Select',
+    'default' => array(''),
+    'quick_form_type' => 'Select',
+    'html_attributes' => array(
+      'class' => 'crm-select2',
+      'multiple' => TRUE,
+    ),
+    'pseudoconstant' => [
+      'callback' => 'CRM_Accountsync_BAO_Config::getPaymentProcessors',
+    ],
   ),
   'account_sync_contribution_day_zero' => array(
     'group_name' => 'Account Sync',
@@ -78,5 +110,47 @@ return array(
     'html_attributes' => array(
       'formatType' => 'activityDateTime',
     )
+  ),
+  'account_sync_send_receipt' => array(
+    'group_name' => 'Account Sync',
+    'group' => 'accountsync',
+    'name' => 'account_sync_send_receipt',
+    'type' => 'Array',
+    'add' => '4.4',
+    'is_domain' => 1,
+    'is_contact' => 0,
+    'default' => array('no_override'),
+    'title' => 'Send receipts for Contributions',
+    'description' => '',
+    'help_text' => 'Set \'Send receipt?\' option for all Contributions synced.',
+    'html_type' => 'Select',
+    'quick_form_type' => 'Element',
+    'html_attributes' => array(
+      'no_override' => 'No override',
+      'send' => 'Send',
+      'do_not_send' => 'Do not send',
+    ),
+  ),
+  'account_sync_push_contribution_status' => array(
+    'group_name' => 'Account Sync',
+    'group' => 'accountsync',
+    'name' => 'account_sync_push_contribution_status',
+    'type' => 'Array',
+    'add' => '4.7',
+    'is_domain' => 1,
+    'is_contact' => 0,
+    'default' => $defaultContributionStatus,
+    'description' => 'Select contribution status that can be pushed to Invoice table.',
+    'title' =>  'Push Contribution Status',
+    'help_text' => '',
+    'html_type' => 'Select',
+    'html_attributes' => array(
+      'multiple' => 1,
+      'class' => 'crm-select2',
+    ),
+    'pseudoconstant' => array(
+      'optionGroupName' => 'contribution_status',
+    ),
+    'quick_form_type' => 'Select',
   ),
  );
