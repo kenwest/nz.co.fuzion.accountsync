@@ -132,7 +132,6 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
               'return' => 'contact_id',
             ]);
             break;
-
           case 'Contribution':
             $contribution_id = $objectRef->id;
             $contactID = civicrm_api3('Contribution', 'getvalue', [
